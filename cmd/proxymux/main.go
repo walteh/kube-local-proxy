@@ -6,15 +6,19 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
 )
 
 type Proxy struct {
 	LocalPort  string
 	RemoteHost string
+	RemotePort string
 }
 
 func main() {
+	fmt.Println("Starting proxymux with arguments:", os.Args)
+
 	if len(os.Args) < 2 {
 		fmt.Println("Usage: proxymux <port>:<host>:<port> <port>:<host>:<port>")
 		os.Exit(1)
@@ -25,7 +29,17 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+
 	ctx := context.Background()
+
+	// look for signal and end context
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt)
+	go func() {
+		<-signalChan
+		ctx.Done()
+	}()
+
 	for _, p := range proxies {
 		go func(pr Proxy) {
 			err := proxy(ctx, pr)
@@ -34,6 +48,10 @@ func main() {
 			}
 		}(p)
 	}
+
+	<-ctx.Done()
+
+	fmt.Println("Proxymux stopped")
 }
 
 func proxy(ctx context.Context, proxy Proxy) error {
@@ -45,6 +63,11 @@ func proxy(ctx context.Context, proxy Proxy) error {
 		<-ctx.Done()
 		fmt.Println("Stopping proxy for", proxy.LocalPort)
 	}()
+
+	// make sure the remote is reachable
+	if _, err := net.Dial("tcp", net.JoinHostPort(proxy.RemoteHost, proxy.RemotePort)); err != nil {
+		return fmt.Errorf("failed to connect to remote host: %w", err)
+	}
 
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%s", proxy.LocalPort))
 	if err != nil {
@@ -68,14 +91,14 @@ func proxy(ctx context.Context, proxy Proxy) error {
 			fmt.Println("Failed to accept connection:", err)
 			continue
 		}
-		go handleConnection(conn, proxy.RemoteHost)
+		go handleConnection(conn, proxy.RemoteHost, proxy.RemotePort)
 	}
 }
 
-func handleConnection(conn net.Conn, remoteHost string) {
+func handleConnection(conn net.Conn, remoteHost string, remotePort string) {
 	defer conn.Close()
 
-	remoteConn, err := net.Dial("tcp", remoteHost)
+	remoteConn, err := net.Dial("tcp", net.JoinHostPort(remoteHost, remotePort))
 	if err != nil {
 		fmt.Println("Failed to connect to remote host:", err)
 		return
@@ -96,11 +119,25 @@ func parseProxyArgs(args []string) ([]Proxy, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("invalid proxy argument: %s", arg)
 		}
-		port, host := parts[0], parts[1]
-		if port == "" || host == "" {
+		localPort, host := parts[0], parts[1]
+		if localPort == "" || host == "" {
 			return nil, fmt.Errorf("invalid proxy argument: %s", arg)
 		}
-		proxies = append(proxies, Proxy{LocalPort: port, RemoteHost: host})
+
+		hostname, port, err := net.SplitHostPort(host)
+		if err != nil {
+			return nil, fmt.Errorf("invalid proxy argument: %s", arg)
+		}
+
+		if port == "" {
+			port = "80"
+		}
+
+		if hostname == "" {
+			return nil, fmt.Errorf("invalid proxy argument: %s", arg)
+		}
+
+		proxies = append(proxies, Proxy{LocalPort: localPort, RemoteHost: hostname, RemotePort: port})
 	}
 	return proxies, nil
 }
