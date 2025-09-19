@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -125,6 +129,61 @@ func TestProxyForwardsData(t *testing.T) {
 	require.Equal(t, []byte("pong"), buf)
 
 	require.NoError(t, <-remoteResult)
+
+	cancel()
+
+	select {
+	case err := <-proxyErr:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("proxy did not exit after cancellation")
+	}
+}
+
+func TestProxyHandlesHTTPS(t *testing.T) {
+	t.Parallel()
+
+	var hits int32
+	tlsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		require.Equal(t, "/hello", r.URL.Path)
+		_, err := w.Write([]byte("world"))
+		require.NoError(t, err)
+	}))
+	defer tlsServer.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	localPort := availablePort(t)
+	proxyConfig := Proxy{LocalPort: localPort, RemoteHost: tlsServer.Listener.Addr().String()}
+
+	proxyErr := make(chan error, 1)
+	go func() {
+		proxyErr <- proxy(ctx, proxyConfig)
+	}()
+
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	defer client.CloseIdleConnections()
+
+	var resp *http.Response
+	var err error
+	target := fmt.Sprintf("https://127.0.0.1:%s/hello", localPort)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		resp, err = client.Get(target)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.NoError(t, err, "failed to reach HTTPS server through proxy")
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, []byte("world"), body)
+	require.Equal(t, int32(1), atomic.LoadInt32(&hits))
 
 	cancel()
 
