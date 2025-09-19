@@ -17,10 +17,10 @@ type Proxy struct {
 }
 
 func main() {
-	fmt.Println("Starting proxymux with arguments:", os.Args)
+	fmt.Println("Starting l4proxy with arguments:", os.Args)
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: proxymux <port>:<host>:<port> <port>:<host>:<port>")
+		fmt.Println("Usage: l4proxy <port>:<host>:<port> <port>:<host>:<port>")
 		os.Exit(1)
 	}
 
