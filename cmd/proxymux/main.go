@@ -27,12 +27,12 @@ func main() {
 	}
 	ctx := context.Background()
 	for _, p := range proxies {
-		go func() {
-			err := proxy(ctx, p)
+		go func(pr Proxy) {
+			err := proxy(ctx, pr)
 			if err != nil {
 				fmt.Println("Proxy error:", err)
 			}
-		}()
+		}(p)
 	}
 }
 
@@ -51,6 +51,10 @@ func proxy(ctx context.Context, proxy Proxy) error {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 	defer lis.Close()
+	go func() {
+		<-ctx.Done()
+		lis.Close()
+	}()
 
 	for {
 		if ctx.Err() != nil {
@@ -58,6 +62,9 @@ func proxy(ctx context.Context, proxy Proxy) error {
 		}
 		conn, err := lis.Accept()
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			fmt.Println("Failed to accept connection:", err)
 			continue
 		}
